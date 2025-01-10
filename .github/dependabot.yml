@@ -6,7 +6,8 @@ updates:
       interval: weekly
       day: monday
     reviewers:
-      - "bznein"
-      - "chatton"
-      - "irajdeep"
-      - "rodrigovalin"
+      - "slaskawi"
+      - "lsierant"
+      - "mircea-cosbuc"
+      - "nammn"
+      - "Julien-Ben"

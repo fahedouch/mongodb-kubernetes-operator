@@ -41,15 +41,18 @@ func TestPodTemplateSpec(t *testing.T) {
 			container.WithName("init-container-0"),
 			container.WithImage("init-image"),
 			container.WithVolumeMounts([]corev1.VolumeMount{volumeMount1}),
+			container.WithSecurityContext(container.DefaultSecurityContext()),
 		)),
 		WithContainerByIndex(0, container.Apply(
 			container.WithName("container-0"),
 			container.WithImage("image"),
 			container.WithVolumeMounts([]corev1.VolumeMount{volumeMount1}),
+			container.WithSecurityContext(container.DefaultSecurityContext()),
 		)),
 		WithContainerByIndex(1, container.Apply(
 			container.WithName("container-1"),
 			container.WithImage("image"),
+			container.WithSecurityContext(container.DefaultSecurityContext()),
 		)),
 		WithVolumeMounts("init-container-0", volumeMount2),
 		WithVolumeMounts("container-0", volumeMount2),
@@ -74,16 +77,19 @@ func TestPodTemplateSpec(t *testing.T) {
 	assert.Equal(t, "init-container-0", p.Spec.InitContainers[0].Name)
 	assert.Equal(t, "init-image", p.Spec.InitContainers[0].Image)
 	assert.Equal(t, []corev1.VolumeMount{volumeMount1, volumeMount2}, p.Spec.InitContainers[0].VolumeMounts)
+	assert.Equal(t, container.DefaultSecurityContext(), *p.Spec.InitContainers[0].SecurityContext)
 
 	assert.Len(t, p.Spec.Containers, 2)
 
 	assert.Equal(t, "container-0", p.Spec.Containers[0].Name)
 	assert.Equal(t, "image", p.Spec.Containers[0].Image)
 	assert.Equal(t, []corev1.VolumeMount{volumeMount1, volumeMount2}, p.Spec.Containers[0].VolumeMounts)
+	assert.Equal(t, container.DefaultSecurityContext(), *p.Spec.Containers[0].SecurityContext)
 
 	assert.Equal(t, "container-1", p.Spec.Containers[1].Name)
 	assert.Equal(t, "image", p.Spec.Containers[1].Image)
-	assert.Equal(t, []corev1.VolumeMount{volumeMount1, volumeMount2}, p.Spec.Containers[0].VolumeMounts)
+	assert.Equal(t, []corev1.VolumeMount{volumeMount1, volumeMount2}, p.Spec.Containers[1].VolumeMounts)
+	assert.Equal(t, container.DefaultSecurityContext(), *p.Spec.Containers[1].SecurityContext)
 }
 
 func TestPodTemplateSpec_MultipleEditsToContainer(t *testing.T) {
@@ -241,6 +247,140 @@ func TestMergeEnvironmentVariables(t *testing.T) {
 	assert.Equal(t, mergedContainer.Env[1].Value, "val2")
 }
 
+func TestMergeTolerations(t *testing.T) {
+	tests := []struct {
+		name                string
+		defaultTolerations  []corev1.Toleration
+		overrideTolerations []corev1.Toleration
+		expectedTolerations []corev1.Toleration
+	}{
+		{
+			// In case the calling code specifies default tolerations,
+			// they should be kept when there are no overrides.
+			name: "Overriding with nil tolerations",
+			defaultTolerations: []corev1.Toleration{
+				{
+					Key:      "key1",
+					Value:    "value1",
+					Operator: corev1.TolerationOpEqual,
+				},
+				{
+					Key:      "key1",
+					Value:    "value2",
+					Operator: corev1.TolerationOpExists,
+				},
+			},
+			overrideTolerations: nil,
+			expectedTolerations: []corev1.Toleration{
+				{
+					Key:      "key1",
+					Value:    "value1",
+					Operator: corev1.TolerationOpEqual,
+				},
+				{
+					Key:      "key1",
+					Value:    "value2",
+					Operator: corev1.TolerationOpExists,
+				},
+			},
+		},
+		{
+			// If the override is specifying an empty list of tolerations,
+			// they should replace default tolerations.
+			name: "Overriding with empty tolerations",
+			defaultTolerations: []corev1.Toleration{
+				{
+					Key:      "key1",
+					Value:    "value1",
+					Operator: corev1.TolerationOpEqual,
+				},
+			},
+			overrideTolerations: []corev1.Toleration{},
+			expectedTolerations: []corev1.Toleration{},
+		},
+		{
+			// Overriding toleration should replace a nil original toleration.
+			name:               "Overriding when default toleration is nil",
+			defaultTolerations: nil,
+			overrideTolerations: []corev1.Toleration{
+				{
+					Key:      "key1",
+					Value:    "value1",
+					Operator: corev1.TolerationOpEqual,
+				},
+				{
+					Key:      "key1",
+					Value:    "value2",
+					Operator: corev1.TolerationOpExists,
+				},
+			},
+			expectedTolerations: []corev1.Toleration{
+				{
+					Key:      "key1",
+					Value:    "value1",
+					Operator: corev1.TolerationOpEqual,
+				},
+				{
+					Key:      "key1",
+					Value:    "value2",
+					Operator: corev1.TolerationOpExists,
+				},
+			},
+		},
+		{
+			// Overriding toleration should replace any original toleration.
+			name: "Overriding when original toleration is not nil",
+			defaultTolerations: []corev1.Toleration{
+				{
+					Key:      "key1",
+					Value:    "value3",
+					Operator: corev1.TolerationOpEqual,
+				},
+				{
+					Key:      "key1",
+					Value:    "value4",
+					Operator: corev1.TolerationOpExists,
+				},
+			},
+			overrideTolerations: []corev1.Toleration{
+				{
+					Key:      "key1",
+					Value:    "value1",
+					Operator: corev1.TolerationOpEqual,
+				},
+				{
+					Key:      "key1",
+					Value:    "value2",
+					Operator: corev1.TolerationOpExists,
+				},
+			},
+			expectedTolerations: []corev1.Toleration{
+				{
+					Key:      "key1",
+					Value:    "value1",
+					Operator: corev1.TolerationOpEqual,
+				},
+				{
+					Key:      "key1",
+					Value:    "value2",
+					Operator: corev1.TolerationOpExists,
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defaultSpec := getDefaultPodSpec()
+			defaultSpec.Spec.Tolerations = tt.defaultTolerations
+			overrideSpec := getDefaultPodSpec()
+			overrideSpec.Spec.Tolerations = tt.overrideTolerations
+
+			mergedSpec := merge.PodTemplateSpecs(defaultSpec, overrideSpec)
+			assert.Equal(t, tt.expectedTolerations, mergedSpec.Spec.Tolerations)
+		})
+	}
+}
+
 func TestMergeContainer(t *testing.T) {
 	vol0 := corev1.VolumeMount{Name: "container-0.volume-mount-0"}
 	sideCarVol := corev1.VolumeMount{Name: "container-1.volume-mount-0"}
@@ -369,9 +509,9 @@ func TestAddVolumes(t *testing.T) {
 
 	p := New(volumeModification, volumesModification)
 	assert.Len(t, p.Spec.Volumes, 2)
-	assert.Equal(t, p.Spec.Volumes[0].Name, "new-volume")
-	assert.Equal(t, p.Spec.Volumes[1].Name, "new-volume-2")
-
+	assert.Equal(t, "new-volume", p.Spec.Volumes[0].Name)
+	assert.Equal(t, "new-volume-2", p.Spec.Volumes[1].Name)
+	assert.Equal(t, "new-host-path", p.Spec.Volumes[0].VolumeSource.HostPath.Path)
 }
 
 func int64Ref(i int64) *int64 {

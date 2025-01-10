@@ -40,17 +40,19 @@ jobs:
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_ROBOT_TOKEN }}
 
+      # template: .action_templates/steps/set-up-qemu.yaml
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
       - name: Publish Image To Quay
         if: steps.release_status.outputs.OUTPUT == 'unreleased'
-        run: python pipeline.py --image-name ${{ github.event.inputs.pipeline-argument }} --release true
+        run: python pipeline.py --image-name ${{ github.event.inputs.pipeline-argument }} --release --sign
         env:
           MONGODB_COMMUNITY_CONFIG: "${{ github.workspace }}/scripts/ci/config.json"
           AWS_ACCESS_KEY_ID: "${{ secrets.AWS_ACCESS_KEY_ID }}"
           AWS_SECRET_ACCESS_KEY: "${{ secrets.AWS_SECRET_ACCESS_KEY }}"
-
-      - name: Add Supported Release
-        if: steps.release_status.outputs.OUTPUT == 'unreleased'
-        run: python scripts/ci/add_supported_release.py --image-name ${{ github.event.inputs.release-key }}
-        env:
-          ATLAS_DATABASE: "${{ secrets.ATLAS_DATABASE }}"
-          ATLAS_CONNECTION_STRING: "${{ secrets.ATLAS_CONNECTION_STRING }}"
+          GRS_USERNAME: "${{ vars.GRS_USERNAME }}"
+          GRS_PASSWORD: "${{ secrets.GRS_PASSWORD }}"
+          PKCS11_URI: "${{ vars.PKCS11_URI }}"
+          ARTIFACTORY_USERNAME: "${{ vars.ARTIFACTORY_USERNAME }}"
+          ARTIFACTORY_PASSWORD: "${{ secrets.ARTIFACTORY_PASSWORD }}"

@@ -1,27 +1,11 @@
-# MongoDB Kubernetes Operator 0.7.4
+# MongoDB Kubernetes Operator 0.12.0
 
-## Kubernetes Operator
+## Added support for MongoDB 8.0.0 GA
+MongoDB 8.0.0 GA is now officially supported by the Operator
 
-- Bug fixes
-  - The names of connection string secrets generated for configured users are RFC1123 validated.
-- Changes
-  - Support for changing port number in running cluster.
+## Minor fixes and improvements
 
-## MongoDBCommunity Resource
-
-- Changes
-  - Adds an optional field `users[i].connectionStringSecretName` for deterministically setting the name of the connection string secret created by the operator for every configured user.
-
-- Bug fixes
-  - Allows for *arbiters* to be set using `spec.arbiters` attribute. Fixes a condition where *arbiters* could not be added to the Replica Set.
-
-## Updated Image Tags
-
-- mongodb-kubernetes-operator:0.7.4
-- mongodb-agent:11.12.0.7388-1
-- mongodb-kubernetes-readinessprobe:1.0.9
-- mongodb-kubernetes-operator-version-upgrade-post-start-hook:1.0.4
-
-_All the images can be found in:_
-
-https://quay.io/mongodb
+ - Use pointer field for priority in member options
+ - readinessProbe: use human-readable timestamps instead
+ - Bumped Go to 1.23 and kube APIs to 1.29
+ - Update package crypto to remediate multiple CVEs

@@ -1,5 +1,6 @@
 vars:
   registry: <registry>
+  architecture: amd64
 
 images:
   - name: e2e
@@ -7,7 +8,8 @@ images:
       context: .
       template_context: scripts/dev/templates
     inputs:
-      - e2e_image
+      - image
+    platform: linux/$(inputs.params.architecture)
     stages:
       - name: e2e-template
         task_type: dockerfile_template
@@ -29,8 +31,7 @@ images:
           quay.expires-after: 48h
 
         output:
-          - registry: $(inputs.params.registry)/$(inputs.params.e2e_image)
-            tag: $(inputs.params.version_id)
-          - registry: $(inputs.params.registry)/$(inputs.params.e2e_image)
-            tag: latest
-
+          - registry: $(inputs.params.registry)/$(inputs.params.image)
+            tag: $(inputs.params.version_id)-$(inputs.params.architecture)
+          - registry: $(inputs.params.registry)/$(inputs.params.image)
+            tag: latest-$(inputs.params.architecture)
