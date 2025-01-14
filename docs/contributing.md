@@ -42,7 +42,7 @@ each one of them in charge of some part of the lifecycle of the MongoDB database
 # Getting Started
 
 ## PR Prerequisites
-* Please ensure you have signed our Contributor Agreement. You can find it [here](https://www.mongodb.com/legal/contributor-agreement). 
+* Please ensure you have signed our Contributor Agreement. You can find it [here](https://www.mongodb.com/legal/contributor-agreement).
 
 * Please ensure that all commits are signed.
 
@@ -57,11 +57,10 @@ to be able to run properly. Create a json file with the following content:
   "namespace": "mongodb",
   "repo_url": "localhost:5000",
   "operator_image": "mongodb-kubernetes-operator",
-  "e2e_image": "community-e2e",
-  "version_upgrade_hook_image": "community-operator-version-upgrade-post-start-hook",
-  "agent_image_ubuntu": "mongodb-agent-dev",
-  "agent_image_ubi": "mongodb-agent-ubi-dev",
-  "readiness_probe_image": "mongodb-kubernetes-readiness",
+  "e2e_image": "community-operator-e2e",
+  "version_upgrade_hook_image": "mongodb-kubernetes-operator-version-upgrade-post-start-hook",
+  "agent_image": "mongodb-agent-ubi-dev",
+  "readiness_probe_image": "mongodb-kubernetes-readinessprobe",
   "s3_bucket": ""
 }
 ```
@@ -73,13 +72,11 @@ to be able to run properly. Create a json file with the following content:
 3. `operator_image` will be used as the name of the operator deployment, and the name of the operator image when build.
 4. `e2e_image` the name of e2e test image that will be built.
 5. `version_upgrade_hook_image` the name of the version upgrade post start hook image.
-6. `image_type` this can be either `ubi` or `ubuntu` and determines the distro of the images built. (currently only the agent image has multiple distros)
-7. `agent_image_ubuntu` the name of the ubuntu agent image.
-8. `agent_image_ubi` the name of the ubi agent image.
-9. `s3_bucket` the S3 bucket that Dockerfiles will be pushed to as part of the release process. Note: this is only required when running the release tasks locally.
+6. `agent_image` the name of the agent image.
+7. `s3_bucket` the S3 bucket that Dockerfiles will be pushed to as part of the release process. Note: this is only required when running the release tasks locally.
 
 
-You can set the `MONGODB_COMMUNITY_CONFIG` environment variable to be the absolute path of this file. 
+You can set the `MONGODB_COMMUNITY_CONFIG` environment variable to be the absolute path of this file.
 It will default to `~/.community-operator-dev/config.json`
 
 Please see [here](./build_operator_locally.md) to see how to build and deploy the operator locally.
@@ -102,8 +99,9 @@ instance, you can leave this as `mongodb`.
 
 The test runner is a Python script, in order to use it a virtualenv needs to be
 created.
+
 **Python 3.9 is not supported yet. Please use Python 3.8.**
-  
+
 ### Pip
 ```sh
 python -m venv venv
@@ -134,6 +132,14 @@ make operator-image deploy
 
 This will build and deploy the operator to namespace specified in your configuration file.
 
+If you are using a local docker registry you should run the following command.
+The additional `IMG_BUILD_ARGS=--insecure` variable will add the `--insecure` flag to the command creating the manifests.
+This is necessary if your local registry is not secure. Read more about the flag on the [documentatio](https://docs.docker.com/reference/cli/docker/manifest/#working-with-insecure-registries)
+
+```sh
+IMG_BUILD_ARGS=--insecure make operator-image deploy
+```
+
 
 #### See the operator deployment
 ```sh
@@ -142,7 +148,7 @@ kubectl get pods
 
 #### (Optional) Create a MongoDBCommunity Resource
 
-Follow the steps outlined [here](./deploy-configure.md) to deploy some resource.
+Follow the steps outlined [here](./deploy-configure.md) to deploy some resources.
 
 #### Cleanup
 To remove the operator and any created resources you can run
@@ -151,7 +157,7 @@ To remove the operator and any created resources you can run
 make undeploy
 ```
 
-Alternatively, you can run the operator locally with
+Alternatively, you can run the operator locally. Make sure you follow the steps outlined in [run-operator-locally.md](run-operator-locally.md)
 
 ```sh
 make run
@@ -170,7 +176,8 @@ make test
 ### E2E Tests
 
 If this is the first time running E2E tests, you will need to ensure that you have built and pushed
-all images required by the E2E tests. You can do this by running.
+all images required by the E2E tests. You can do this by running the following command, 
+or with the additional `IMG_BUILD_ARGS=--insecure` described above.
 
 ```sh
 make all-images
@@ -182,7 +189,7 @@ For subsequent tests you can use
 make e2e-k8s test=<test-name>
 ```
 
-This will only re-build the e2e test image.
+This will only re-build the e2e test image. Add `IMG_BUILD_ARGS=--insecure` if necessary
 
 We have built a simple mechanism to run E2E tests on your cluster using a runner
 that deploys a series of Kubernetes objects, runs them, and awaits for their
@@ -201,7 +208,7 @@ replica_set_scale
 ...
 ```
 
-The tests should run individually using the runner like this:
+The tests should run individually using the runner like this, or additionally with `IMG_BUILD_ARGS=--insecure`:
 
 ```sh
 make e2e-k8s test=replica_set

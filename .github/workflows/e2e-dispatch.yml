@@ -40,10 +40,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        - pipeline-argument: operator-ubi
-        - pipeline-argument: version-post-start-hook-init
-        - pipeline-argument: readiness-probe-init
-        - pipeline-argument: agent-ubi
+        - pipeline-argument: operator
+        - pipeline-argument: version-upgrade-hook
+        - pipeline-argument: readiness-probe
+        - pipeline-argument: agent
         - pipeline-argument: e2e
     steps:
     # template: .action_templates/steps/checkout.yaml
@@ -55,7 +55,7 @@ jobs:
     - name: Setup Python
       uses: actions/setup-python@v2
       with:
-        python-version: '3.10.4'
+        python-version: 3.10.4
     - name: Cache Dependencies
       uses: actions/cache@v2
       with:
@@ -70,10 +70,13 @@ jobs:
         registry: quay.io
         username: ${{ secrets.QUAY_USERNAME }}
         password: ${{ secrets.QUAY_ROBOT_TOKEN }}
+    # template: .action_templates/steps/set-up-qemu.yaml
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
     # template: .action_templates/steps/build-and-push-development-images.yaml
     - name: Build and Push Images
       run: |
-        python pipeline.py --image-name ${{ matrix.pipeline-argument }} --release false
+        python pipeline.py --image-name ${{ matrix.pipeline-argument }}  --tag ${{ github.run_id }}
       env:
         MONGODB_COMMUNITY_CONFIG: ${{ github.workspace }}/scripts/ci/config.json
         version_id: ${{ github.run_id }}
@@ -91,7 +94,7 @@ jobs:
     - name: Setup Python
       uses: actions/setup-python@v2
       with:
-        python-version: '3.10.4'
+        python-version: 3.10.4
     - name: Cache Dependencies
       uses: actions/cache@v2
       with:
@@ -123,7 +126,7 @@ jobs:
 
     - name: Upload Diagnostics
       if: always()
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       continue-on-error: true
       with:
         name: ${{ github.event.inputs.test-name }}-${{ github.event.inputs.distro

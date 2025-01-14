@@ -6,9 +6,9 @@ import (
 	"strings"
 
 	"github.com/blang/semver"
-	"github.com/pkg/errors"
-
 	"github.com/mongodb/mongodb-kubernetes-operator/pkg/util/versions"
+
+	"k8s.io/utils/ptr"
 )
 
 type Topology string
@@ -36,21 +36,25 @@ type Builder struct {
 	name               string
 	fcv                string
 	topology           Topology
+	isEnterprise       bool
 	mongodbVersion     string
 	previousAC         AutomationConfig
 	// MongoDB installable versions
-	versions             []MongoDbVersionConfig
-	backupVersions       []BackupVersion
-	monitoringVersions   []MonitoringVersion
-	options              Options
-	processModifications []func(int, *Process)
-	modifications        []Modification
-	auth                 *Auth
-	cafilePath           string
-	sslConfig            *TLS
-	tlsConfig            *TLS
-	dataDir              string
-	port                 int
+	versions                  []MongoDbVersionConfig
+	backupVersions            []BackupVersion
+	monitoringVersions        []MonitoringVersion
+	options                   Options
+	processModifications      []func(int, *Process)
+	modifications             []Modification
+	auth                      *Auth
+	cafilePath                string
+	sslConfig                 *TLS
+	tlsConfig                 *TLS
+	dataDir                   string
+	port                      int
+	memberOptions             []MemberOptions
+	forceReconfigureToVersion *int64
+	settings                  map[string]interface{}
 }
 
 func NewBuilder() *Builder {
@@ -67,8 +71,18 @@ func NewBuilder() *Builder {
 	}
 }
 
+func (b *Builder) SetMemberOptions(memberOptions []MemberOptions) *Builder {
+	b.memberOptions = memberOptions
+	return b
+}
+
 func (b *Builder) SetOptions(options Options) *Builder {
 	b.options = options
+	return b
+}
+
+func (b *Builder) IsEnterprise(isEnterprise bool) *Builder {
+	b.isEnterprise = isEnterprise
 	return b
 }
 
@@ -180,6 +194,16 @@ func (b *Builder) SetAuth(auth Auth) *Builder {
 	return b
 }
 
+func (b *Builder) SetSettings(settings map[string]interface{}) *Builder {
+	b.settings = settings
+	return b
+}
+
+func (b *Builder) SetForceReconfigureToVersion(version int64) *Builder {
+	b.forceReconfigureToVersion = &version
+	return b
+}
+
 func (b *Builder) AddProcessModification(f func(int, *Process)) *Builder {
 	b.processModifications = append(b.processModifications, f)
 	return b
@@ -199,12 +223,12 @@ func (b *Builder) setFeatureCompatibilityVersionIfUpgradeIsHappening() error {
 		previousFCV := b.previousAC.Processes[0].FeatureCompatibilityVersion
 		previousFCVsemver, err := semver.Make(fmt.Sprintf("%s.0", previousFCV))
 		if err != nil {
-			return errors.Errorf("can't compute semver version from previous FeatureCompatibilityVersion %s", previousFCV)
+			return fmt.Errorf("can't compute semver version from previous FeatureCompatibilityVersion %s", previousFCV)
 		}
 
 		currentVersionSemver, err := semver.Make(b.mongodbVersion)
 		if err != nil {
-			return errors.Errorf("current MongoDB version is not a valid semver version: %s", b.mongodbVersion)
+			return fmt.Errorf("current MongoDB version is not a valid semver version: %s", b.mongodbVersion)
 		}
 
 		// We would increase FCV here.
@@ -218,29 +242,53 @@ func (b *Builder) setFeatureCompatibilityVersionIfUpgradeIsHappening() error {
 }
 
 func (b *Builder) Build() (AutomationConfig, error) {
-	hostnames := make([]string, b.members+b.arbiters)
+	if err := b.setFeatureCompatibilityVersionIfUpgradeIsHappening(); err != nil {
+		return AutomationConfig{}, fmt.Errorf("can't build the automation config: %s", err)
+	}
+
+	hostnames := make([]string, 0, b.members+b.arbiters)
 
 	// Create hostnames for data-bearing nodes. They start from 0
 	for i := 0; i < b.members; i++ {
-		hostnames[i] = fmt.Sprintf("%s-%d.%s", b.name, i, b.domain)
+		hostnames = append(hostnames, fmt.Sprintf("%s-%d.%s", b.name, i, b.domain))
 	}
 
 	// Create hostnames for arbiters. They are added right after the regular members
-	for i := b.members; i < b.arbiters+b.members; i++ {
+	for i := 0; i < b.arbiters; i++ {
 		// Arbiters will be in b.name-arb-svc service
-		hostnames[i] = fmt.Sprintf("%s-arb-%d.%s", b.name, i-b.members, b.arbiterDomain)
+		hostnames = append(hostnames, fmt.Sprintf("%s-arb-%d.%s", b.name, i, b.arbiterDomain))
 	}
 
 	members := make([]ReplicaSetMember, b.members+b.arbiters)
 	processes := make([]Process, b.members+b.arbiters)
 
+	if b.fcv != "" {
+		_, err := semver.Make(fmt.Sprintf("%s.0", b.fcv))
+
+		if err != nil {
+			return AutomationConfig{}, fmt.Errorf("invalid feature compatibility version: %s", err)
+		}
+	}
+
 	if err := b.setFeatureCompatibilityVersionIfUpgradeIsHappening(); err != nil {
-		return AutomationConfig{}, errors.Errorf("can't build the automation config: %s", err)
+		return AutomationConfig{}, fmt.Errorf("can't build the automation config: %s", err)
 	}
 
 	dataDir := DefaultMongoDBDataDir
 	if b.dataDir != "" {
 		dataDir = b.dataDir
+	}
+
+	fcv := versions.CalculateFeatureCompatibilityVersion(b.mongodbVersion)
+	if len(b.fcv) > 0 {
+		fcv = b.fcv
+	}
+
+	mongoDBVersion := b.mongodbVersion
+	if b.isEnterprise {
+		if !strings.HasSuffix(mongoDBVersion, "-ent") {
+			mongoDBVersion = mongoDBVersion + "-ent"
+		}
 	}
 
 	for i, h := range hostnames {
@@ -258,18 +306,13 @@ func (b *Builder) Build() (AutomationConfig, error) {
 			replicaSetIndex = arbitersStartingIndex + processIndex
 		}
 
-		fcv := versions.CalculateFeatureCompatibilityVersion(b.mongodbVersion)
-		if b.fcv != "" {
-			fcv = b.fcv
-		}
-
 		// TODO: Replace with a Builder for Process.
 		process := &Process{
 			Name:                        toProcessName(b.name, processIndex, isArbiter),
 			HostName:                    h,
 			FeatureCompatibilityVersion: fcv,
 			ProcessType:                 Mongod,
-			Version:                     b.mongodbVersion,
+			Version:                     mongoDBVersion,
 			AuthSchemaVersion:           5,
 		}
 
@@ -297,17 +340,21 @@ func (b *Builder) Build() (AutomationConfig, error) {
 			horizon = b.replicaSetHorizons[i]
 		}
 
-		isVotingMember := true
-		if !isArbiter && i >= (maxVotingMembers-b.arbiters) {
-			// Arbiters can't be non-voting members
-			// If there are more than 7 (maxVotingMembers) members on this Replica Set
-			// those that lose right to vote should be the data-bearing nodes, not the
-			// arbiters.
-			isVotingMember = false
-		}
+		// Arbiters can't be non-voting members
+		// If there are more than 7 (maxVotingMembers) members on this Replica Set
+		// those that lose right to vote should be the data-bearing nodes, not the
+		// arbiters.
+		isVotingMember := isArbiter || i < (maxVotingMembers-b.arbiters)
 
 		// TODO: Replace with a Builder for ReplicaSetMember.
 		members[i] = newReplicaSetMember(process.Name, replicaSetIndex, horizon, isArbiter, isVotingMember)
+
+		if len(b.memberOptions) > i {
+			// override the member options if explicitly specified in the spec
+			members[i].Votes = b.memberOptions[i].Votes
+			members[i].Priority = ptr.To(b.memberOptions[i].GetPriority())
+			members[i].Tags = b.memberOptions[i].Tags
+		}
 	}
 
 	if b.auth == nil {
@@ -315,9 +362,14 @@ func (b *Builder) Build() (AutomationConfig, error) {
 		b.auth = &disabled
 	}
 
-	dummyConfig := buildDummyMongoDbVersionConfig(b.mongodbVersion)
+	dummyConfig := buildDummyMongoDbVersionConfig(mongoDBVersion)
 	if !versionsContain(b.versions, dummyConfig) {
 		b.versions = append(b.versions, dummyConfig)
+	}
+
+	var replSetForceConfig *ReplSetForceConfig
+	if b.forceReconfigureToVersion != nil {
+		replSetForceConfig = &ReplSetForceConfig{CurrentVersion: *b.forceReconfigureToVersion}
 	}
 
 	currentAc := AutomationConfig{
@@ -329,6 +381,8 @@ func (b *Builder) Build() (AutomationConfig, error) {
 				Members:         members,
 				ProtocolVersion: "1",
 				NumberArbiters:  b.arbiters,
+				Force:           replSetForceConfig,
+				Settings:        b.settings,
 			},
 		},
 		MonitoringVersions: b.monitoringVersions,
@@ -400,6 +454,18 @@ func buildDummyMongoDbVersionConfig(version string) MongoDbVersionConfig {
 				Platform:     "linux",
 				Architecture: "amd64",
 				Flavor:       "ubuntu",
+				Modules:      []string{},
+			},
+			{
+				Platform:     "linux",
+				Architecture: "aarch64",
+				Flavor:       "ubuntu",
+				Modules:      []string{},
+			},
+			{
+				Platform:     "linux",
+				Architecture: "aarch64",
+				Flavor:       "rhel",
 				Modules:      []string{},
 			},
 		},
