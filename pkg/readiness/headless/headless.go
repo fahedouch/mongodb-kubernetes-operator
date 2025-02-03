@@ -1,8 +1,9 @@
 package headless
 
 import (
+	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"strconv"
 
@@ -23,11 +24,11 @@ const (
 // /var/run/secrets/kubernetes.io/serviceaccount/namespace file (see
 // https://kubernetes.io/docs/tasks/access-application-cluster/access-cluster/#accessing-the-api-from-a-pod)
 // though passing the namespace as an environment variable makes the code simpler for testing and saves an IO operation
-func PerformCheckHeadlessMode(health health.Status, conf config.Config) (bool, error) {
+func PerformCheckHeadlessMode(ctx context.Context, health health.Status, conf config.Config) (bool, error) {
 	var targetVersion int64
 	var err error
 
-	targetVersion, err = secret.ReadAutomationConfigVersionFromSecret(conf.Namespace, conf.ClientSet, conf.AutomationConfigSecretName)
+	targetVersion, err = secret.ReadAutomationConfigVersionFromSecret(ctx, conf.Namespace, conf.ClientSet, conf.AutomationConfigSecretName)
 	if err != nil {
 		// this file is expected to be present in case of AppDB, there is no point trying to access it in
 		// community, it masks the underlying error
@@ -38,7 +39,7 @@ func PerformCheckHeadlessMode(health health.Status, conf config.Config) (bool, e
 			}
 			defer file.Close()
 
-			data, err := ioutil.ReadAll(file)
+			data, err := io.ReadAll(file)
 			if err != nil {
 				return false, err
 			}
@@ -54,7 +55,7 @@ func PerformCheckHeadlessMode(health health.Status, conf config.Config) (bool, e
 
 	currentAgentVersion := readCurrentAgentInfo(health, targetVersion)
 
-	if err = pod.PatchPodAnnotation(conf.Namespace, currentAgentVersion, conf.Hostname, conf.ClientSet); err != nil {
+	if err = pod.PatchPodAnnotation(ctx, conf.Namespace, currentAgentVersion, conf.Hostname, conf.ClientSet); err != nil {
 		return false, err
 	}
 
@@ -63,23 +64,15 @@ func PerformCheckHeadlessMode(health health.Status, conf config.Config) (bool, e
 
 // readCurrentAgentInfo returns the version the Agent has reached and the rs member name
 func readCurrentAgentInfo(health health.Status, targetVersion int64) int64 {
-	for _, v := range health.ProcessPlans {
+	for _, v := range health.MmsStatus {
 		zap.S().Debugf("Automation Config version: %d, Agent last version: %d", targetVersion, v.LastGoalStateClusterConfigVersion)
 		return v.LastGoalStateClusterConfigVersion
 	}
-	// The edge case: if the scale down operation is happening and the member + process are removed
-	// from the Automation Config - the Agent just doesn't write the 'mmsStatus' at all so there is no indication of
-	// the version it has achieved (though health file contains 'IsInGoalState=true')
-	// Let's return the desired version in case if the Agent is in goal state and no plans exist in the health file
-	for _, v := range health.Healthiness {
-		if v.IsInGoalState {
-			return targetVersion
-		}
-		return -1
-	}
 
-	// There's a small theoretical probability that the Pod got restarted right when the Agent shutdown the Mongodb
-	// on scale down - in this case the 'health' file is empty - so we return the target version to avoid locking
-	// the Operator waiting for the annotation
+	// If there are no plans, we always return target version.
+	// Previously we relied on IsInGoalState, but the agent started sometimes returning IsInGoalState=false when scaling down members.
+	// No plans will occur if the agent is just starting or if the current process is not in the process list in automation config.
+	// Either way this is not a blocker for the operator to perform necessary statefulset changes on it.
+
 	return targetVersion
 }

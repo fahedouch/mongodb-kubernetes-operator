@@ -34,9 +34,10 @@ func GetAnnotation(object client.Object, key string) string {
 	return value
 }
 
-func SetAnnotations(object client.Object, annotations map[string]string, kubeClient client.Client) error {
-	currentObject := object
-	err := kubeClient.Get(context.TODO(), types.NamespacedName{Name: object.GetName(), Namespace: object.GetNamespace()}, currentObject)
+// SetAnnotations updates the objects.Annotation with the supplied annotation and does the same with the object backed in kubernetes.
+func SetAnnotations(ctx context.Context, object client.Object, annotations map[string]string, kubeClient client.Client) error {
+	currentObject := object.DeepCopyObject().(client.Object)
+	err := kubeClient.Get(ctx, types.NamespacedName{Name: object.GetName(), Namespace: object.GetNamespace()}, currentObject)
 	if err != nil {
 		return err
 	}
@@ -67,13 +68,17 @@ func SetAnnotations(object client.Object, annotations map[string]string, kubeCli
 	}
 
 	patch := client.RawPatch(types.JSONPatchType, data)
-	return kubeClient.Patch(context.TODO(), object, patch)
+	if err = kubeClient.Patch(ctx, currentObject, patch); err != nil {
+		return err
+	}
+	object.SetAnnotations(currentObject.GetAnnotations())
+	return nil
 }
 
-func UpdateLastAppliedMongoDBVersion(mdb Versioned, kubeClient client.Client) error {
+func UpdateLastAppliedMongoDBVersion(ctx context.Context, mdb Versioned, kubeClient client.Client) error {
 	annotations := map[string]string{
 		LastAppliedMongoDBVersion: mdb.GetMongoDBVersionForAnnotation(),
 	}
 
-	return SetAnnotations(mdb, annotations, kubeClient)
+	return SetAnnotations(ctx, mdb, annotations, kubeClient)
 }

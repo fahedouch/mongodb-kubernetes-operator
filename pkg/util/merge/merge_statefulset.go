@@ -65,7 +65,7 @@ func LabelSelectors(originalLabelSelector, overrideLabelSelector *metav1.LabelSe
 	}
 	// we have only specified a label selector in the original
 	if originalLabelSelector == nil {
-		return originalLabelSelector
+		return overrideLabelSelector
 	}
 
 	// we have specified both, so we must merge them
@@ -169,6 +169,9 @@ func PersistentVolumeClaim(defaultPvc corev1.PersistentVolumeClaim, overridePvc 
 	if overridePvc.Namespace != "" {
 		defaultPvc.Namespace = overridePvc.Namespace
 	}
+
+	defaultPvc.Labels = StringToStringMap(defaultPvc.Labels, overridePvc.Labels)
+	defaultPvc.Annotations = StringToStringMap(defaultPvc.Annotations, overridePvc.Annotations)
 
 	if overridePvc.Spec.VolumeMode != nil {
 		defaultPvc.Spec.VolumeMode = overridePvc.Spec.VolumeMode

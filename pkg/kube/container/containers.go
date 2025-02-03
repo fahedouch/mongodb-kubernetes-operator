@@ -159,6 +159,23 @@ func WithVolumeMounts(volumeMounts []corev1.VolumeMount) Modification {
 	}
 }
 
+func RemoveVolumeMount(volumeMount string) Modification {
+	return func(container *corev1.Container) {
+		index := 0
+		found := false
+		for i := range container.VolumeMounts {
+			if container.VolumeMounts[i].Name == volumeMount {
+				index = i
+				found = true
+			}
+		}
+
+		if found {
+			container.VolumeMounts = append(container.VolumeMounts[:index], container.VolumeMounts[index+1:]...)
+		}
+	}
+}
+
 func volumeMountToString(v corev1.VolumeMount) string {
 	return strings.Join([]string{v.Name, v.MountPath, v.SubPath}, "-")
 }
@@ -177,18 +194,17 @@ func WithPorts(ports []corev1.ContainerPort) Modification {
 	}
 }
 
-// WithSecurityContext sets teh container's SecurityContext
-func WithSecurityContext(context *corev1.SecurityContext) Modification {
+// WithSecurityContext sets the container's SecurityContext
+func WithSecurityContext(context corev1.SecurityContext) Modification {
 	return func(container *corev1.Container) {
-		container.SecurityContext = context
+		container.SecurityContext = &context
 	}
 }
 
-// DefaultSecurityContext returns the default security context for containers.
-// It sets RunAsUser = 2000 and RunAsNonRoot = true
-func DefaultSecurityContext() *corev1.SecurityContext {
-	runAsNonRoot := true
-	runAsUser := int64(2000)
-
-	return &corev1.SecurityContext{RunAsUser: &runAsUser, RunAsNonRoot: &runAsNonRoot}
+// DefaultSecurityContext returns the default container security context with:
+// - readOnlyRootFilesystem set to true
+func DefaultSecurityContext() corev1.SecurityContext {
+	readOnlyRootFilesystem := true
+	allowPrivilegeEscalation := false
+	return corev1.SecurityContext{ReadOnlyRootFilesystem: &readOnlyRootFilesystem, AllowPrivilegeEscalation: &allowPrivilegeEscalation}
 }

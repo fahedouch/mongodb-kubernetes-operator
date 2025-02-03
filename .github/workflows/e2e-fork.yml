@@ -33,31 +33,31 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        - pipeline-argument: operator-ubi
-        - pipeline-argument: version-post-start-hook-init
-        - pipeline-argument: readiness-probe-init
-        - pipeline-argument: agent-ubi
+        - pipeline-argument: operator
+        - pipeline-argument: version-upgrade-hook
+        - pipeline-argument: readiness-probe
+        - pipeline-argument: agent
         - pipeline-argument: e2e
     if: contains(github.event.pull_request.labels.*.name, 'dependencies') || contains(github.event.pull_request.labels.*.name,
       'safe-to-test')
     steps:
     # template: .action_templates/steps/cancel-previous.yaml
     - name: Cancel Previous Runs
-      uses: styfle/cancel-workflow-action@0.9.0
+      uses: styfle/cancel-workflow-action@89f242ee29e10c53a841bfe71cc0ce7b2f065abc # 0.9.0
       with:
         access_token: ${{ github.token }}
     # template: .action_templates/steps/checkout-fork.yaml
     - name: Checkout Code
       uses: actions/checkout@v2
       with:
-        ref: ${{github.event.pull_request.head.ref}}
+        ref: ${{github.event.pull_request.head.sha}}
         repository: ${{github.event.pull_request.head.repo.full_name}}
         submodules: true
     # template: .action_templates/steps/setup-and-install-python.yaml
     - name: Setup Python
       uses: actions/setup-python@v2
       with:
-        python-version: '3.10.4'
+        python-version: 3.10.4
     - name: Cache Dependencies
       uses: actions/cache@v2
       with:
@@ -72,10 +72,13 @@ jobs:
         registry: quay.io
         username: ${{ secrets.QUAY_USERNAME }}
         password: ${{ secrets.QUAY_ROBOT_TOKEN }}
+    # template: .action_templates/steps/set-up-qemu.yaml
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
     # template: .action_templates/steps/build-and-push-development-images.yaml
     - name: Build and Push Images
       run: |
-        python pipeline.py --image-name ${{ matrix.pipeline-argument }} --release false
+        python pipeline.py --image-name ${{ matrix.pipeline-argument }}  --tag ${{ github.run_id }}
       env:
         MONGODB_COMMUNITY_CONFIG: ${{ github.workspace }}/scripts/ci/config.json
         version_id: ${{ github.run_id }}
@@ -89,7 +92,13 @@ jobs:
         include:
         - test-name: replica_set
           distro: ubi
-        - test-name: replica_set_recovery
+        - test-name: replica_set_enterprise_upgrade_4_5
+          distro: ubi
+        - test-name: replica_set_enterprise_upgrade_5_6
+          distro: ubi
+        - test-name: replica_set_enterprise_upgrade_6_7
+          distro: ubi
+        - test-name: replica_set_enterprise_upgrade_7_8
           distro: ubi
         - test-name: replica_set_recovery
           distro: ubi
@@ -103,13 +112,9 @@ jobs:
           distro: ubi
         - test-name: feature_compatibility_version
           distro: ubi
-        - test-name: feature_compatibility_version_upgrade
-          distro: ubi
         - test-name: prometheus
           distro: ubi
         - test-name: replica_set_tls
-          distro: ubi
-        - test-name: replica_set_tls_pem_file
           distro: ubi
         - test-name: replica_set_tls_recreate_mdbc
           distro: ubi
@@ -138,17 +143,25 @@ jobs:
           distro: ubi
         - test-name: replica_set_mongod_port_change_with_arbiters
           distro: ubi
+        - test-name: replica_set_operator_upgrade
+          distro: ubi
+        - test-name: replica_set_connection_string_options
+          distro: ubi
+        - test-name: replica_set_x509
+          distro: ubi
+        - test-name: replica_set_remove_user
+          distro: ubi
     steps:
     # template: .action_templates/steps/cancel-previous.yaml
     - name: Cancel Previous Runs
-      uses: styfle/cancel-workflow-action@0.9.0
+      uses: styfle/cancel-workflow-action@89f242ee29e10c53a841bfe71cc0ce7b2f065abc # 0.9.0
       with:
         access_token: ${{ github.token }}
     # template: .action_templates/steps/checkout-fork.yaml
     - name: Checkout Code
       uses: actions/checkout@v2
       with:
-        ref: ${{github.event.pull_request.head.ref}}
+        ref: ${{github.event.pull_request.head.sha}}
         repository: ${{github.event.pull_request.head.repo.full_name}}
         submodules: true
     # template: .action_templates/steps/set-run-status.yaml
@@ -173,7 +186,7 @@ jobs:
     - name: Setup Python
       uses: actions/setup-python@v2
       with:
-        python-version: '3.10.4'
+        python-version: 3.10.4
     - name: Cache Dependencies
       uses: actions/cache@v2
       with:
@@ -220,7 +233,7 @@ jobs:
 
     - name: Upload Diagnostics
       if: always() && steps.dump_diagnostics.outcome == 'success'
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       continue-on-error: true
       with:
         name: ${{ matrix.test-name }}-${{ matrix.distro }}-diagnostics

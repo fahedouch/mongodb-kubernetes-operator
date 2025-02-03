@@ -35,6 +35,7 @@ class DevConfig:
         self._distro = distro
         self.include_tags: List[str] = []
         self.skip_tags: List[str] = []
+        self.gh_run_id = ""
 
     def ensure_tag_is_run(self, tag: str) -> None:
         if tag not in self.include_tags:
@@ -108,32 +109,34 @@ class DevConfig:
         return self._get_dev_image("readiness_probe_image_dev", "readiness_probe_image")
 
     @property
-    def agent_dev_image_ubi(self) -> str:
-        return self._get_dev_image("agent_image_ubi_dev", "agent_image_ubi")
+    def mongodb_image_name(self) -> str:
+        return self._config.get("mongodb_image_name", "mongodb-community-server")
 
     @property
-    def agent_dev_image_ubuntu(self) -> str:
-        return self._get_dev_image("agent_image_ubuntu_dev", "agent_image_ubuntu")
-
-    @property
-    def agent_image_ubuntu(self) -> str:
-        return self._config["agent_image_ubuntu"]
-
-    @property
-    def agent_image_ubi(self) -> str:
-        return self._config["agent_image_ubi"]
-
-    @property
-    def agent_dev_image(self) -> str:
-        if self._distro == Distro.UBI:
-            return self._get_dev_image("agent_image_ubi_dev", "agent_image_ubi")
-        return self._get_dev_image("agent_image_ubuntu_dev", "agent_image_ubuntu")
+    def mongodb_image_repo_url(self) -> str:
+        return self._config.get("mongodb_image_repo_url", "quay.io/mongodb")
 
     @property
     def agent_image(self) -> str:
+        return self._config["agent_image"]
+
+    @property
+    def local_operator(self) -> str:
+        return self._config["mdb_local_operator"]
+
+    @property
+    def kube_config(self) -> str:
+        return self._config["kubeconfig"]
+
+    @property
+    def agent_image_dev(self) -> str:
+        return self._get_dev_image("agent_image_dev", "agent_image")
+
+    @property
+    def image_type(self) -> str:
         if self._distro == Distro.UBI:
-            return self.agent_dev_image_ubi
-        return self.agent_dev_image_ubuntu
+            return "ubi8"
+        return "ubuntu-2004"
 
     def ensure_skip_tag(self, tag: str) -> None:
         if tag not in self.skip_tags:
@@ -146,7 +149,7 @@ class DevConfig:
 
 
 def load_config(
-    config_file_path: Optional[str] = None, distro: Distro = Distro.UBUNTU
+    config_file_path: Optional[str] = None, distro: Distro = Distro.UBI
 ) -> DevConfig:
     if config_file_path is None:
         config_file_path = get_config_path()

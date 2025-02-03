@@ -1,17 +1,15 @@
-FROM golang:1.17.6 as builder
+ARG builder_image
+FROM --platform=$BUILDPLATFORM ${builder_image} as builder
 
-ENV GO111MODULE=on
-ENV GOFLAGS="-mod=vendor"
-ENV GOPATH ""
+RUN mkdir /workspace
+WORKDIR /workspace
 
-COPY go.mod go.sum ./
-RUN go mod download
+COPY . .
 
-ADD . .
-
-RUN go mod vendor && \
-    go build -o build/_output/version-upgrade-hook -mod=vendor github.com/mongodb/mongodb-kubernetes-operator/cmd/versionhook
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o version-upgrade-hook cmd/versionhook/main.go
 
 FROM busybox
 
-COPY --from=builder /go/build/_output/version-upgrade-hook /version-upgrade-hook
+COPY --from=builder /workspace/version-upgrade-hook /version-upgrade-hook

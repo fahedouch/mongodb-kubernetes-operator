@@ -3,8 +3,9 @@ package automationconfig
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/stretchr/testify/require"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -27,13 +28,15 @@ func defaultMongoDbVersion(version string) MongoDbVersionConfig {
 }
 
 func TestBuildAutomationConfig(t *testing.T) {
-	ac, err := NewBuilder().
+	builder := NewBuilder().
 		SetName("my-rs").
 		SetDomain("my-ns.svc.cluster.local").
 		SetMongoDBVersion("4.2.0").
 		SetMembers(3).
 		SetFCV("4.0").
-		Build()
+		SetForceReconfigureToVersion(-1)
+
+	ac, err := builder.Build()
 
 	assert.NoError(t, err)
 	assert.Len(t, ac.Processes, 3)
@@ -55,13 +58,22 @@ func TestBuildAutomationConfig(t *testing.T) {
 	rs := ac.ReplicaSets[0]
 	assert.Equal(t, rs.Id, "my-rs", "The name provided should be configured to be the rs id")
 	assert.Len(t, rs.Members, 3, "there should be the number of replicas provided")
+	require.NotNil(t, rs.Force)
+	assert.Equal(t, ReplSetForceConfig{CurrentVersion: -1}, *rs.Force)
 
 	for i, member := range rs.Members {
-		assert.Equal(t, 1, member.Votes)
+		assert.Equal(t, 1, *member.Votes)
 		assert.False(t, member.ArbiterOnly)
 		assert.Equal(t, i, member.Id)
 		assert.Equal(t, ac.Processes[i].Name, member.Host)
 	}
+
+	builder.SetForceReconfigureToVersion(1)
+	ac, err = builder.Build()
+	assert.NoError(t, err)
+	rs = ac.ReplicaSets[0]
+	require.NotNil(t, rs.Force)
+	assert.Equal(t, ReplSetForceConfig{CurrentVersion: 1}, *rs.Force)
 }
 
 func TestBuildAutomationConfigArbiters(t *testing.T) {
@@ -143,22 +155,22 @@ func TestBuildAutomationConfigArbiters(t *testing.T) {
 	m := ac.ReplicaSets[0].Members
 
 	// First 5 data-bearing nodes have votes
-	assert.Equal(t, 1, m[0].Votes)
-	assert.Equal(t, 1, m[1].Votes)
-	assert.Equal(t, 1, m[2].Votes)
-	assert.Equal(t, 1, m[3].Votes)
-	assert.Equal(t, 1, m[4].Votes)
+	assert.Equal(t, 1, *m[0].Votes)
+	assert.Equal(t, 1, *m[1].Votes)
+	assert.Equal(t, 1, *m[2].Votes)
+	assert.Equal(t, 1, *m[3].Votes)
+	assert.Equal(t, 1, *m[4].Votes)
 
 	// From 6th data-bearing nodes, they won'thave any votes
-	assert.Equal(t, 0, m[5].Votes)
-	assert.Equal(t, 0, m[6].Votes)
-	assert.Equal(t, 0, m[7].Votes)
-	assert.Equal(t, 0, m[8].Votes)
-	assert.Equal(t, 0, m[9].Votes)
+	assert.Equal(t, 0, *m[5].Votes)
+	assert.Equal(t, 0, *m[6].Votes)
+	assert.Equal(t, 0, *m[7].Votes)
+	assert.Equal(t, 0, *m[8].Votes)
+	assert.Equal(t, 0, *m[9].Votes)
 
 	// Arbiters always have votes
-	assert.Equal(t, 1, m[10].Votes)
-	assert.Equal(t, 1, m[11].Votes)
+	assert.Equal(t, 1, *m[10].Votes)
+	assert.Equal(t, 1, *m[11].Votes)
 }
 
 func TestReplicaSetMultipleHorizonsScaleDown(t *testing.T) {
@@ -465,6 +477,44 @@ func TestAreEqual(t *testing.T) {
 		assert.NoError(t, err)
 		assert.False(t, areEqual)
 	})
+
+	t.Run("Automation Configs with nil and zero values are not equal", func(t *testing.T) {
+		votes := 1
+		priority := "0.0"
+		firstBuilder := NewBuilder().SetName("name0").SetMongoDBVersion("mdbVersion0").SetOptions(Options{DownloadBase: "downloadBase0"}).SetDomain("domain0").SetMembers(2).SetAuth(Auth{Disabled: true})
+		firstBuilder.SetMemberOptions([]MemberOptions{MemberOptions{Votes: &votes, Priority: &priority}})
+		firstAc, _ := firstBuilder.Build()
+		firstAc.Version = 2
+		secondBuilder := NewBuilder().SetName("name0").SetMongoDBVersion("mdbVersion0").SetOptions(Options{DownloadBase: "downloadBase0"}).SetDomain("domain0").SetMembers(2).SetAuth(Auth{Disabled: true})
+		secondBuilder.SetMemberOptions([]MemberOptions{MemberOptions{Votes: &votes, Priority: nil}})
+		secondAc, _ := secondBuilder.Build()
+		secondAc.Version = 2
+
+		areEqual, err := AreEqual(firstAc, secondAc)
+		assert.NoError(t, err)
+		assert.False(t, areEqual)
+	})
+}
+
+func TestValidateFCV(t *testing.T) {
+	_, err := NewBuilder().SetFCV("4.2.4").Build()
+
+	assert.Error(t, err)
+}
+
+func TestEnterpriseVersion(t *testing.T) {
+	//given
+	mongoDBVersion := "6.0.5"
+	expectedVersionInTheAutomationConfig := mongoDBVersion + "-ent"
+
+	//when
+	ac, err := NewBuilder().SetMongoDBVersion(mongoDBVersion).SetMembers(1).IsEnterprise(true).Build()
+
+	//then
+	assert.NoError(t, err)
+	assert.Equal(t, expectedVersionInTheAutomationConfig, ac.Processes[0].Version)
+	assert.Equal(t, "enterprise", ac.Versions[0].Builds[0].Modules[0])
+	assert.Equal(t, "enterprise", ac.Versions[0].Builds[1].Modules[0])
 }
 
 func createAutomationConfig(name, mongodbVersion, domain string, opts Options, auth Auth, members, acVersion int) AutomationConfig {

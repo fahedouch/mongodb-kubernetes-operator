@@ -1,20 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"time"
-
-	"go.uber.org/zap/zapcore"
-	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/mongodb/mongodb-kubernetes-operator/pkg/readiness/config"
 	"github.com/mongodb/mongodb-kubernetes-operator/pkg/readiness/headless"
 	"github.com/mongodb/mongodb-kubernetes-operator/pkg/readiness/health"
-	"github.com/mongodb/mongodb-kubernetes-operator/pkg/util/contains"
+	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -27,13 +25,10 @@ const (
 	mongodNotReadyIntervalMinutes = time.Minute * 1
 )
 
-var riskySteps []string
 var logger *zap.SugaredLogger
 
 func init() {
-	riskySteps = []string{"WaitAllRsMembersUp", "WaitRsInit"}
-
-	// By default we log to the output (convenient for tests)
+	// By default, we log to the output (convenient for tests)
 	cfg := zap.NewDevelopmentConfig()
 	log, err := cfg.Build()
 	if err != nil {
@@ -47,23 +42,22 @@ func init() {
 // The logic depends on if the pod is a standard MongoDB or an AppDB one.
 // - If MongoDB: then just the 'statuses[0].IsInGoalState` field is used to learn if the Agent has reached the goal
 // - if AppDB: the 'mmsStatus[0].lastGoalVersionAchieved' field is compared with the one from mounted automation config
-// Additionally if the previous check hasn't returned 'true' the "deadlock" case is checked to make sure the Agent is
-// not waiting for the other members.
-func isPodReady(conf config.Config) (bool, error) {
+// Additionally if the previous check hasn't returned 'true' an additional check for wait steps is being performed
+func isPodReady(ctx context.Context, conf config.Config) (bool, error) {
 	healthStatus, err := parseHealthStatus(conf.HealthStatusReader)
 	if err != nil {
 		logger.Errorf("There was problem parsing health status file: %s", err)
-		return false, err
+		return false, nil
 	}
 
 	// The 'statuses' file can be empty only for OM Agents
-	if len(healthStatus.Healthiness) == 0 && !isHeadlessMode() {
-		logger.Info("'statuses' is empty. We assume there is no automation config for the agent yet.")
+	if len(healthStatus.Statuses) == 0 && !isHeadlessMode() {
+		logger.Debug("'statuses' is empty. We assume there is no automation config for the agent yet. Returning ready.")
 		return true, nil
 	}
 
 	// If the agent has reached the goal state
-	inGoalState, err := isInGoalState(healthStatus, conf)
+	inGoalState, err := isInGoalState(ctx, healthStatus, conf)
 	if err != nil {
 		logger.Errorf("There was problem checking the health status: %s", err)
 		return false, err
@@ -75,33 +69,35 @@ func isPodReady(conf config.Config) (bool, error) {
 	}
 
 	if inGoalState && inReadyState {
-		logger.Info("Agent has reached goal state")
+		logger.Info("The Agent has reached goal state. Returning ready.")
 		return true, nil
 	}
 
-	// Failback logic: the agent is not in goal state and got stuck in some steps
-	if !inGoalState && hasDeadlockedSteps(healthStatus) {
+	// Fallback logic: the agent is not in goal state and got stuck in some steps
+	if !inGoalState && isOnWaitingStep(healthStatus) {
+		logger.Info("The Agent is on wait Step. Returning ready.")
 		return true, nil
 	}
 
+	logger.Info("Reached the end of the check. Returning not ready.")
 	return false, nil
 }
 
-// hasDeadlockedSteps returns true if the agent is stuck on waiting for the other agents
-func hasDeadlockedSteps(health health.Status) bool {
-	currentStep := findCurrentStep(health.ProcessPlans)
+// isOnWaitingStep returns true if the agent is stuck on waiting for the other Agents or something else to happen.
+func isOnWaitingStep(health health.Status) bool {
+	currentStep := findCurrentStep(health.MmsStatus)
 	if currentStep != nil {
-		return isDeadlocked(currentStep)
+		return isWaitStep(currentStep)
 	}
 	return false
 }
 
-// findCurrentStep returns the step which seems to be run by the Agent now. The step is always in the last plan
-// (see https://github.com/10gen/ops-manager-kubernetes/pull/401#discussion_r333071555) so we iterate over all the steps
-// there and find the last step which has "Started" non nil
-// (indeed this is not the perfect logic as sometimes the agent doesn't update the 'Started' as well - see
-// 'health-status-ok.json', but seems it works for finding deadlocks still
-//noinspection GoNilness
+// findCurrentStep returns the step which the Agent is working now.
+// The algorithm (described in https://github.com/10gen/ops-manager-kubernetes/pull/401#discussion_r333071555):
+//   - Obtain the latest plan (the last one in the plans array)
+//   - Find the last step, which has Started not nil and Completed nil. The Steps are processed as a tree in a BFS fashion.
+//     The last element is very likely to be the Step the Agent is performing at the moment. There are some chances that
+//     this is a waiting step, use isWaitStep to verify this.
 func findCurrentStep(processStatuses map[string]health.MmsDirectorStatus) *health.StepStatus {
 	var currentPlan *health.PlanStatus
 	if len(processStatuses) == 0 {
@@ -113,13 +109,14 @@ func findCurrentStep(processStatuses map[string]health.MmsDirectorStatus) *healt
 		logger.Errorf("Only one process status is expected but got %d!", len(processStatuses))
 		return nil
 	}
+
 	// There is always only one process managed by the Agent - so there will be only one loop
-	for k, v := range processStatuses {
-		if len(v.Plans) == 0 {
-			logger.Errorf("The process %s doesn't contain any plans!", k)
+	for processName, processStatus := range processStatuses {
+		if len(processStatus.Plans) == 0 {
+			logger.Errorf("The process %s doesn't contain any plans!", processName)
 			return nil
 		}
-		currentPlan = v.Plans[len(v.Plans)-1]
+		currentPlan = processStatus.Plans[len(processStatus.Plans)-1]
 	}
 
 	if currentPlan.Completed != nil {
@@ -131,7 +128,7 @@ func findCurrentStep(processStatuses map[string]health.MmsDirectorStatus) *healt
 	var lastStartedStep *health.StepStatus
 	for _, m := range currentPlan.Moves {
 		for _, s := range m.Steps {
-			if s.Started != nil {
+			if s.Started != nil && s.Completed == nil {
 				lastStartedStep = s
 			}
 		}
@@ -140,21 +137,32 @@ func findCurrentStep(processStatuses map[string]health.MmsDirectorStatus) *healt
 	return lastStartedStep
 }
 
-func isDeadlocked(status *health.StepStatus) bool {
-	// Some logic behind 15 seconds: the health status file is dumped each 10 seconds so we are sure that if the agent
-	// has been in the the step for 10 seconds - this means it is waiting for the other hosts and they are not available
+// isWaitStep returns true is the Agent is currently waiting for something to happen.
+//
+// Most of the time, the Agent waits for an initialization by other member of the cluster. In such case,
+// holding the rollout does not improve the overall system state. Even if the probe returns true too quickly
+// the worst thing that can happen is a short service interruption, which is still better than full service outage.
+//
+// The 15 seconds explanation:
+//   - The status file is written every 10s but the Agent processes steps independently of it
+//   - In order to avoid reacting on a newly added wait Step (as they can naturally go away), we're giving the Agent
+//     at least 15 sends to spend on that Step.
+//   - This hopefully prevents the Probe from flipping False to True too quickly.
+func isWaitStep(status *health.StepStatus) bool {
+	// Some logic behind 15 seconds: the health status file is dumped each 10 seconds, so we are sure that if the agent
+	// has been in the step for 10 seconds - this means it is waiting for the other hosts, and they are not available
 	fifteenSecondsAgo := time.Now().Add(time.Duration(-15) * time.Second)
-	if contains.String(riskySteps, status.Step) && status.Completed == nil && status.Started.Before(fifteenSecondsAgo) {
-		logger.Infof("Indicated a possible deadlock, status: %s, started at %s but hasn't finished "+
+	if status.IsWaitStep && status.Completed == nil && status.Started.Before(fifteenSecondsAgo) {
+		logger.Debugf("Indicated a wait Step, status: %s, started at %s but hasn't finished "+
 			"yet. Marking the probe as ready", status.Step, status.Started.Format(time.RFC3339))
 		return true
 	}
 	return false
 }
 
-func isInGoalState(health health.Status, conf config.Config) (bool, error) {
+func isInGoalState(ctx context.Context, health health.Status, conf config.Config) (bool, error) {
 	if isHeadlessMode() {
-		return headless.PerformCheckHeadlessMode(health, conf)
+		return headless.PerformCheckHeadlessMode(ctx, health, conf)
 	}
 	return performCheckOMMode(health), nil
 }
@@ -162,7 +170,7 @@ func isInGoalState(health health.Status, conf config.Config) (bool, error) {
 // performCheckOMMode does a general check if the Agent has reached the goal state - must be called when Agent is in
 // "OM mode"
 func performCheckOMMode(health health.Status) bool {
-	for _, v := range health.Healthiness {
+	for _, v := range health.Statuses {
 		logger.Debug(v)
 		if v.IsInGoalState {
 			return true
@@ -190,7 +198,7 @@ func kubernetesClientset() (kubernetes.Interface, error) {
 
 func parseHealthStatus(reader io.Reader) (health.Status, error) {
 	var health health.Status
-	data, err := ioutil.ReadAll(reader)
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		return health, err
 	}
@@ -200,28 +208,55 @@ func parseHealthStatus(reader io.Reader) (health.Status, error) {
 }
 
 func initLogger(l *lumberjack.Logger) {
-	log := zap.New(zapcore.NewCore(
-		zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
-		zapcore.AddSync(l),
-		zap.DebugLevel,
-	), zap.Development())
+	encoderConfig := zap.NewProductionEncoderConfig()
+	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+
+	consoleCore := zapcore.NewCore(
+		zapcore.NewJSONEncoder(encoderConfig),
+		zapcore.AddSync(os.Stdout),
+		zap.DebugLevel)
+
+	cores := []zapcore.Core{consoleCore}
+	if config.ReadBoolWitDefault(config.WithAgentFileLogging, "true") {
+		fileCore := zapcore.NewCore(
+			zapcore.NewJSONEncoder(encoderConfig),
+			zapcore.AddSync(l),
+			zap.DebugLevel)
+		cores = append(cores, fileCore)
+	}
+
+	core := zapcore.NewTee(cores...)
+	log := zap.New(core, zap.Development())
 	logger = log.Sugar()
+
+	logger.Infof("logging configuration: %+v", l)
 }
 
 func main() {
+	ctx := context.Background()
 	clientSet, err := kubernetesClientset()
 	if err != nil {
 		panic(err)
 	}
 
-	cfg, err := config.BuildFromEnvVariables(clientSet, isHeadlessMode())
+	initLogger(config.GetLogger())
+
+	healthStatusFilePath := config.GetEnvOrDefault(config.AgentHealthStatusFilePathEnv, config.DefaultAgentHealthStatusFilePath)
+	file, err := os.Open(healthStatusFilePath)
+	// The agent might be slow in creating the health status file.
+	// In that case, we don't want to panic to show the message
+	// in the kubernetes description. That would be a red herring, since that will solve itself with enough time.
+	if err != nil {
+		logger.Errorf("health status file not avaible yet: %s ", err)
+		os.Exit(1)
+	}
+
+	cfg, err := config.BuildFromEnvVariables(clientSet, isHeadlessMode(), file)
 	if err != nil {
 		panic(err)
 	}
 
-	initLogger(cfg.Logger)
-
-	ready, err := isPodReady(cfg)
+	ready, err := isPodReady(ctx, cfg)
 	if err != nil {
 		panic(err)
 	}
@@ -233,10 +268,10 @@ func main() {
 // isInReadyState checks the MongoDB Server state. It returns true if the mongod process is up and its state
 // is PRIMARY or SECONDARY.
 func isInReadyState(health health.Status) bool {
-	if len(health.Healthiness) == 0 {
+	if len(health.Statuses) == 0 {
 		return true
 	}
-	for _, processHealth := range health.Healthiness {
+	for _, processHealth := range health.Statuses {
 		// We know this loop should run only once, in Kubernetes there's
 		// only 1 server managed per host.
 		if !processHealth.ExpectedToBeUp {

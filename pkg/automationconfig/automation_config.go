@@ -5,15 +5,44 @@ import (
 	"encoding/json"
 
 	"github.com/mongodb/mongodb-kubernetes-operator/pkg/authentication/scramcredentials"
+	"github.com/spf13/cast"
 	"github.com/stretchr/objx"
+	"go.uber.org/zap"
 )
 
 const (
-	Mongod                ProcessType = "mongod"
-	DefaultMongoDBDataDir string      = "/data"
-	DefaultDBPort         int         = 27017
-	DefaultAgentLogPath   string      = "/var/log/mongodb-mms-automation"
+	Mongod                              ProcessType = "mongod"
+	DefaultMongoDBDataDir               string      = "/data"
+	DefaultDBPort                       int         = 27017
+	DefaultAgentLogPath                 string      = "/var/log/mongodb-mms-automation"
+	DefaultAgentLogFile                 string      = "/var/log/mongodb-mms-automation/automation-agent.log"
+	DefaultAgentMaxLogFileDurationHours int         = 24
 )
+
+// +kubebuilder:object:generate=true
+type MemberOptions struct {
+	Votes    *int              `json:"votes,omitempty"`
+	Priority *string           `json:"priority,omitempty"`
+	Tags     map[string]string `json:"tags,omitempty"`
+}
+
+func (o *MemberOptions) GetVotes() int {
+	if o.Votes != nil {
+		return cast.ToInt(o.Votes)
+	}
+	return 1
+}
+
+func (o *MemberOptions) GetPriority() float32 {
+	if o.Priority != nil {
+		return cast.ToFloat32(o.Priority)
+	}
+	return 1.0
+}
+
+func (o *MemberOptions) GetTags() map[string]string {
+	return o.Tags
+}
 
 type AutomationConfig struct {
 	Version     int          `json:"version"`
@@ -55,15 +84,59 @@ type MonitoringVersion struct {
 	AdditionalParams map[string]string `json:"additionalParams,omitempty"`
 }
 
+// CrdLogRotate is the crd definition of LogRotate including fields in strings while the agent supports them as float64
+type CrdLogRotate struct {
+	LogRotate `json:",inline"`
+	// Maximum size for an individual log file before rotation.
+	// The string needs to be able to be converted to float64.
+	// Fractional values of MB are supported.
+	SizeThresholdMB string `json:"sizeThresholdMB"`
+	// Maximum percentage of the total disk space these log files should take up.
+	// The string needs to be able to be converted to float64
+	// +optional
+	PercentOfDiskspace string `json:"percentOfDiskspace,omitempty"`
+}
+
+// AcLogRotate is the internal agent representation of LogRotate
+type AcLogRotate struct {
+	LogRotate `json:",inline"`
+	// Maximum size for an individual log file before rotation.
+	SizeThresholdMB float64 `json:"sizeThresholdMB"`
+	// Maximum percentage of the total disk space these log files should take up.
+	// +optional
+	PercentOfDiskspace float64 `json:"percentOfDiskspace,omitempty"`
+}
+
+// LogRotate matches the setting defined here:
+// https://www.mongodb.com/docs/ops-manager/current/reference/cluster-configuration/#mongodb-instances
+// and https://www.mongodb.com/docs/rapid/reference/command/logRotate/#mongodb-dbcommand-dbcmd.logRotate
+// +kubebuilder:object:generate=true
+type LogRotate struct {
+	// maximum hours for an individual log file before rotation
+	TimeThresholdHrs int `json:"timeThresholdHrs"`
+	// maximum number of log files to leave uncompressed
+	// +optional
+	NumUncompressed int `json:"numUncompressed,omitempty"`
+	// maximum number of log files to have total
+	// +optional
+	NumTotal int `json:"numTotal,omitempty"`
+	// set to 'true' to have the Automation Agent rotate the audit files along
+	// with mongodb log files
+	// +optional
+	IncludeAuditLogsWithMongoDBLogs bool `json:"includeAuditLogsWithMongoDBLogs,omitempty"`
+}
+
 type Process struct {
-	Name                        string      `json:"name"`
-	Disabled                    bool        `json:"disabled"`
-	HostName                    string      `json:"hostname"`
-	Args26                      objx.Map    `json:"args2_6"`
-	FeatureCompatibilityVersion string      `json:"featureCompatibilityVersion"`
-	ProcessType                 ProcessType `json:"processType"`
-	Version                     string      `json:"version"`
-	AuthSchemaVersion           int         `json:"authSchemaVersion"`
+	Name                        string       `json:"name"`
+	Disabled                    bool         `json:"disabled"`
+	HostName                    string       `json:"hostname"`
+	Args26                      objx.Map     `json:"args2_6"`
+	FeatureCompatibilityVersion string       `json:"featureCompatibilityVersion"`
+	ProcessType                 ProcessType  `json:"processType"`
+	Version                     string       `json:"version"`
+	AuthSchemaVersion           int          `json:"authSchemaVersion"`
+	LogRotate                   *AcLogRotate `json:"logRotate,omitempty"`
+	AuditLogRotate              *AcLogRotate `json:"auditLogRotate,omitempty"`
 }
 
 func (p *Process) SetPort(port int) *Process {
@@ -92,6 +165,44 @@ func (p *Process) SetStoragePath(storagePath string) *Process {
 
 func (p *Process) SetReplicaSetName(replSetName string) *Process {
 	return p.SetArgs26Field("replication.replSetName", replSetName)
+}
+
+func (p *Process) SetSystemLog(systemLog SystemLog) *Process {
+	return p.SetArgs26Field("systemLog.path", systemLog.Path).
+		// since Destination is a go type wrapper around string, we will need to force it back to string otherwise
+		// SetArgs value boxing takes the upper (Destination) type instead of string.
+		SetArgs26Field("systemLog.destination", string(systemLog.Destination)).
+		SetArgs26Field("systemLog.logAppend", systemLog.LogAppend)
+}
+
+// SetLogRotate sets the acLogRotate by converting the CrdLogRotate to an acLogRotate.
+func (p *Process) SetLogRotate(lr *CrdLogRotate) *Process {
+	p.LogRotate = ConvertCrdLogRotateToAC(lr)
+	return p
+}
+
+// SetAuditLogRotate sets the acLogRotate by converting the CrdLogRotate to an acLogRotate.
+func (p *Process) SetAuditLogRotate(lr *CrdLogRotate) *Process {
+	p.AuditLogRotate = ConvertCrdLogRotateToAC(lr)
+	return p
+}
+
+// ConvertCrdLogRotateToAC converts a CrdLogRotate to an AcLogRotate representation.
+func ConvertCrdLogRotateToAC(lr *CrdLogRotate) *AcLogRotate {
+	if lr == nil {
+		return &AcLogRotate{}
+	}
+
+	return &AcLogRotate{
+		LogRotate: LogRotate{
+			TimeThresholdHrs:                lr.TimeThresholdHrs,
+			NumUncompressed:                 lr.NumUncompressed,
+			NumTotal:                        lr.NumTotal,
+			IncludeAuditLogsWithMongoDBLogs: lr.IncludeAuditLogsWithMongoDBLogs,
+		},
+		SizeThresholdMB:    cast.ToFloat64(lr.SizeThresholdMB),
+		PercentOfDiskspace: cast.ToFloat64(lr.PercentOfDiskspace),
+	}
 }
 
 func (p *Process) SetWiredTigerCache(cacheSizeGb *float32) *Process {
@@ -126,10 +237,17 @@ const (
 
 type ProcessType string
 
+type Destination string
+
+const (
+	File   Destination = "file"
+	Syslog Destination = "syslog"
+)
+
 type SystemLog struct {
-	Destination string `json:"destination"`
-	Path        string `json:"path"`
-	LogAppend   bool   `json:"logAppend"`
+	Destination Destination `json:"destination"`
+	Path        string      `json:"path"`
+	LogAppend   bool        `json:"logAppend"`
 }
 
 type WiredTiger struct {
@@ -140,20 +258,33 @@ type EngineConfig struct {
 	CacheSizeGB float32 `json:"cacheSizeGB"`
 }
 
+// ReplSetForceConfig setting enables us to force reconfigure automation agent when the MongoDB deployment
+// is in a broken state - for ex: doesn't have a primary.
+// More info: https://www.mongodb.com/docs/ops-manager/current/reference/api/automation-config/automation-config-parameters/#replica-sets
+type ReplSetForceConfig struct {
+	CurrentVersion int64 `json:"currentVersion"`
+}
+
 type ReplicaSet struct {
-	Id              string             `json:"_id"`
-	Members         []ReplicaSetMember `json:"members"`
-	ProtocolVersion string             `json:"protocolVersion"`
-	NumberArbiters  int                `json:"numberArbiters"`
+	Id              string                 `json:"_id"`
+	Members         []ReplicaSetMember     `json:"members"`
+	ProtocolVersion string                 `json:"protocolVersion"`
+	NumberArbiters  int                    `json:"numberArbiters"`
+	Force           *ReplSetForceConfig    `json:"force,omitempty"`
+	Settings        map[string]interface{} `json:"settings,omitempty"`
 }
 
 type ReplicaSetMember struct {
 	Id          int                `json:"_id"`
 	Host        string             `json:"host"`
-	Priority    int                `json:"priority"`
 	ArbiterOnly bool               `json:"arbiterOnly"`
-	Votes       int                `json:"votes"`
 	Horizons    ReplicaSetHorizons `json:"horizons,omitempty"`
+	// this is duplicated here instead of using MemberOptions because type of priority
+	// is different in AC from the CR(CR don't support float) - hence all the members are declared
+	// separately
+	Votes    *int              `json:"votes,omitempty"`
+	Priority *float32          `json:"priority,omitempty"`
+	Tags     map[string]string `json:"tags,omitempty"`
 }
 
 type ReplicaSetHorizons map[string]string
@@ -163,7 +294,7 @@ func newReplicaSetMember(name string, id int, horizons ReplicaSetHorizons, isArb
 	// ensure that the number of voting members in the replica set is not more than 7
 	// as this is the maximum number of voting members.
 	votes := 0
-	priority := 0
+	priority := float32(0.0)
 
 	if isVotingMember {
 		votes = 1
@@ -173,10 +304,10 @@ func newReplicaSetMember(name string, id int, horizons ReplicaSetHorizons, isArb
 	return ReplicaSetMember{
 		Id:          id,
 		Host:        name,
-		Priority:    priority,
 		ArbiterOnly: isArbiter,
-		Votes:       votes,
 		Horizons:    horizons,
+		Votes:       &votes,
+		Priority:    &priority,
 	}
 }
 
@@ -189,8 +320,7 @@ type Auth struct {
 	// AutoAuthMechanisms is a list of auth mechanisms the Automation Agent is able to use
 	AutoAuthMechanisms []string `json:"autoAuthMechanisms,omitempty"`
 
-	// AutoAuthMechanism is the currently active agent authentication mechanism. This is a read only
-	// field
+	// AutoAuthMechanism is the currently active agent authentication mechanism. This is a read only field
 	AutoAuthMechanism string `json:"autoAuthMechanism"`
 	// DeploymentAuthMechanisms is a list of possible auth mechanisms that can be used within deployments
 	DeploymentAuthMechanisms []string `json:"deploymentAuthMechanisms,omitempty"`
@@ -204,6 +334,15 @@ type Auth struct {
 	KeyFileWindows string `json:"keyfileWindows,omitempty"`
 	// AutoPwd is a required field when going from `Disabled=false` to `Disabled=true`
 	AutoPwd string `json:"autoPwd,omitempty"`
+	// UsersDeleted is an array of DeletedUser objects that define the authenticated users to be deleted from specified databases
+	UsersDeleted []DeletedUser `json:"usersDeleted,omitempty"`
+}
+
+type DeletedUser struct {
+	// User is the username that should be deleted
+	User string `json:"user,omitempty"`
+	// Dbs is the array of database names from which the authenticated user should be deleted
+	Dbs []string `json:"dbs,omitempty"`
 }
 
 type Prometheus struct {
@@ -264,8 +403,8 @@ type MongoDBUser struct {
 	AuthenticationRestrictions []string `json:"authenticationRestrictions"`
 
 	// ScramShaCreds are generated by the operator.
-	ScramSha256Creds *scramcredentials.ScramCreds `json:"scramSha256Creds"`
-	ScramSha1Creds   *scramcredentials.ScramCreds `json:"scramSha1Creds"`
+	ScramSha256Creds *scramcredentials.ScramCreds `json:"scramSha256Creds,omitempty"`
+	ScramSha1Creds   *scramcredentials.ScramCreds `json:"scramSha1Creds,omitempty"`
 }
 
 type Role struct {
@@ -287,17 +426,13 @@ type ClientCertificateMode string
 
 const (
 	ClientCertificateModeOptional ClientCertificateMode = "OPTIONAL"
-	ClientCertificateModeRequired ClientCertificateMode = "REQUIRED"
+	ClientCertificateModeRequired ClientCertificateMode = "REQUIRE"
 )
 
 type TLS struct {
 	CAFilePath            string                `json:"CAFilePath"`
+	AutoPEMKeyFilePath    string                `json:"autoPEMKeyFilePath,omitempty"`
 	ClientCertificateMode ClientCertificateMode `json:"clientCertificateMode"`
-}
-
-type LogRotate struct {
-	SizeThresholdMB  int `json:"sizeThresholdMB"`
-	TimeThresholdHrs int `json:"timeThresholdHrs"`
 }
 
 type ToolsVersion struct {
@@ -331,8 +466,8 @@ type MongoDbVersionConfig struct {
 	Builds []BuildConfig `json:"builds"`
 }
 
-// AreEqual returns whether or not the given AutomationConfigs have the same contents.
-// the comparison does not take version into account.
+// AreEqual returns whether the given AutomationConfigs have the same contents.
+// the comparison does not take the version into account.
 func AreEqual(ac0, ac1 AutomationConfig) (bool, error) {
 	// Here we compare the bytes of the two automationconfigs,
 	// we can't use reflect.DeepEqual() as it treats nil entries as different from empty ones,
@@ -357,4 +492,22 @@ func FromBytes(acBytes []byte) (AutomationConfig, error) {
 		return AutomationConfig{}, err
 	}
 	return ac, nil
+}
+
+func ConfigureAgentConfiguration(systemLog *SystemLog, logRotate *CrdLogRotate, auditLR *CrdLogRotate, p *Process) {
+	if systemLog != nil {
+		p.SetSystemLog(*systemLog)
+	}
+
+	if logRotate != nil {
+		if systemLog == nil {
+			zap.S().Warn("Configuring LogRotate without systemLog will not work")
+		}
+		if systemLog != nil && systemLog.Destination == Syslog {
+			zap.S().Warn("Configuring LogRotate with systemLog.Destination = Syslog will not work")
+		}
+		p.SetLogRotate(logRotate)
+		p.SetAuditLogRotate(auditLR)
+	}
+
 }

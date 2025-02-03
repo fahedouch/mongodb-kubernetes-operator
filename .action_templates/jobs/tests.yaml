@@ -7,7 +7,13 @@ tests:
       include:
         - test-name: replica_set
           distro: ubi
-        - test-name: replica_set_recovery
+        - test-name: replica_set_enterprise_upgrade_4_5
+          distro: ubi
+        - test-name: replica_set_enterprise_upgrade_5_6
+          distro: ubi
+        - test-name: replica_set_enterprise_upgrade_6_7
+          distro: ubi
+        - test-name: replica_set_enterprise_upgrade_7_8
           distro: ubi
         - test-name: replica_set_recovery
           distro: ubi
@@ -21,13 +27,9 @@ tests:
           distro: ubi
         - test-name: feature_compatibility_version
           distro: ubi
-        - test-name: feature_compatibility_version_upgrade
-          distro: ubi
         - test-name: prometheus
           distro: ubi
         - test-name: replica_set_tls
-          distro: ubi
-        - test-name: replica_set_tls_pem_file
           distro: ubi
         - test-name: replica_set_tls_recreate_mdbc
           distro: ubi
@@ -55,4 +57,12 @@ tests:
         - test-name: replica_set_mount_connection_string
           distro: ubi
         - test-name: replica_set_mongod_port_change_with_arbiters
+          distro: ubi
+        - test-name: replica_set_operator_upgrade
+          distro: ubi
+        - test-name: replica_set_connection_string_options
+          distro: ubi
+        - test-name: replica_set_x509
+          distro: ubi
+        - test-name: replica_set_remove_user
           distro: ubi

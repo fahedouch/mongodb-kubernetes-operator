@@ -12,16 +12,15 @@ jobs:
     strategy:
       matrix:
         include:
-          - pipeline-argument: operator-ubi
-            release-key: mongodb-kubernetes-operator
-          - pipeline-argument: version-post-start-hook-init
+          - pipeline-argument: operator
+            release-key: operator
+          - pipeline-argument: version-upgrade-hook
             release-key: version-upgrade-hook
-          - pipeline-argument: readiness-probe-init
+          - pipeline-argument: readiness-probe
             release-key: readiness-probe
-          - pipeline-argument: agent-ubi
-            release-key: mongodb-agent
-          - pipeline-argument: agent-ubuntu
-            release-key: mongodb-agent
+          - pipeline-argument: agent
+            release-key: agent
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v2
@@ -51,18 +50,23 @@ jobs:
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_ROBOT_TOKEN }}
 
+      # template: .action_templates/steps/set-up-qemu.yaml
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
       - name: Publish Image To Quay
         if: steps.release_status.outputs.OUTPUT == 'unreleased'
-        run: python pipeline.py --image-name ${{ matrix.pipeline-argument }} --release true
+        run: python pipeline.py --image-name ${{ matrix.pipeline-argument }} --release --sign
         env:
           MONGODB_COMMUNITY_CONFIG: "${{ github.workspace }}/scripts/ci/config.json"
-
-      - name: Add Supported Release
-        if: steps.release_status.outputs.OUTPUT == 'unreleased'
-        run: python scripts/ci/add_supported_release.py --image-name ${{ matrix.release-key }}
-        env:
-          ATLAS_DATABASE: "${{ secrets.ATLAS_DATABASE }}"
-          ATLAS_CONNECTION_STRING: "${{ secrets.ATLAS_CONNECTION_STRING }}"
+          AWS_ACCESS_KEY_ID: "${{ secrets.AWS_ACCESS_KEY_ID }}"
+          AWS_SECRET_ACCESS_KEY: "${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          GRS_USERNAME: "${{ vars.GRS_USERNAME }}"
+          GRS_PASSWORD: "${{ secrets.GRS_PASSWORD }}"
+          PKCS11_URI: "${{ vars.PKCS11_URI }}"
+          ARTIFACTORY_USERNAME: "${{ vars.ARTIFACTORY_USERNAME }}"
+          ARTIFACTORY_PASSWORD: "${{ secrets.ARTIFACTORY_PASSWORD }}"
+          AWS_DEFAULT_REGION: "${{ vars.AWS_DEFAULT_REGION }}"
 
   create-draft-release:
     runs-on: ubuntu-latest
